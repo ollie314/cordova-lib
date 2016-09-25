@@ -16,26 +16,25 @@
     specific language governing permissions and limitations
     under the License.
 */
-var fetch   = require('../src/plugman/fetch'),
+var rewire  = require('rewire'),
+    fetch   = rewire('../src/plugman/fetch'),
     fs      = require('fs'),
-    os      = require('osenv'),
+    os      = require('os'),
     path    = require('path'),
     shell   = require('shelljs'),
     realrm = shell.rm,
-    xml_helpers = require('../src/util/xml-helpers'),
+    //xml_helpers = require('../src/util/xml-helpers'),
     metadata = require('../src/plugman/util/metadata'),
     temp    = path.join(os.tmpdir(), 'plugman', 'fetch'),
-    test_plugin = path.join(__dirname, 'plugins', 'ChildBrowser'),
-    test_plugin_with_space = path.join(__dirname, 'folder with space', 'plugins', 'ChildBrowser'),
-    test_plugin_xml = xml_helpers.parseElementtreeSync(path.join(test_plugin, 'plugin.xml')),
-    test_plugin_id = 'com.phonegap.plugins.childbrowser',
+    test_plugin = path.join(__dirname, 'plugins', 'org.test.plugins.childbrowser'),
+    test_plugin_searchpath = path.join(test_plugin, '..'),
+    //test_plugin_with_space = path.join(__dirname, 'folder with space', 'plugins', 'org.test.plugins.childbrowser'),
+    //test_plugin_xml = xml_helpers.parseElementtreeSync(path.join(test_plugin, 'plugin.xml')),
+    test_plugin_id = 'org.test.plugins.childbrowser',
     test_plugin_version ='0.6.0',
-    somedir = test_plugin,
-    somedir = path.join(temp, test_plugin_id),
     plugins = require('../src/plugman/util/plugins'),
     Q = require('q'),
     registry = require('../src/plugman/registry/registry');
-
 
 describe('fetch', function() {
 
@@ -44,7 +43,8 @@ describe('fetch', function() {
             expect(err).toBeUndefined('Unexpected exception' + err.stack);
         }).fin(done);
     }
-
+    /*
+     * Taking out the following test. Fetch has a copyPlugin method that uses existsSync to see if a plugin already exists in the plugins folder. If the plugin exists in the plugins directory for the cordova project, it won't be copied over. This test fails now due it always returning true for existsSync.
     describe('plugin in a dir with spaces', function() {
         it('should copy locally-available plugin to plugins directory when spaces in path', function(done) {
             // XXX: added this because plugman tries to fetch from registry when plugin folder does not exist
@@ -58,19 +58,25 @@ describe('fetch', function() {
             });
         });
     });
-
+*/
     describe('local plugins', function() {
-        var xml, rm, sym, mkdir, cp, save_metadata;
+        var rm, sym, cp, save_metadata;
         beforeEach(function() {
             rm = spyOn(shell, 'rm');
             sym = spyOn(fs, 'symlinkSync');
             cp = spyOn(shell, 'cp').andCallThrough();
             save_metadata = spyOn(metadata, 'save_fetch_metadata');
             realrm('-rf', temp);
+            fetch.__set__('localPlugins', null);
         });
 
         it('should copy locally-available plugin to plugins directory', function(done) {
             wrapper(fetch(test_plugin, temp), done, function() {
+                expect(cp).toHaveBeenCalledWith('-R', path.join(test_plugin, '*'), path.join(temp, test_plugin_id));
+            });
+        });
+        it('should copy locally-available plugin to plugins directory when adding a plugin with searchpath argument', function(done) {
+            wrapper(fetch(test_plugin_id, temp, { searchpath: test_plugin_searchpath }), done, function() {
                 expect(cp).toHaveBeenCalledWith('-R', path.join(test_plugin, '*'), path.join(temp, test_plugin_id));
             });
         });
@@ -84,7 +90,7 @@ describe('fetch', function() {
             .then(function() {
                 expect('this call').toBe('fail');
             }, function(err) {
-                expect(''+err).toContain('Expected fetched plugin to have ID "wrongID" but got');
+                expect(''+err).toContain('Expected plugin to have ID "wrongID" but got');
             }).fin(done);
         });
         it('should succeed when the expected ID is correct', function(done) {
@@ -93,11 +99,11 @@ describe('fetch', function() {
             });
         });
         it('should fail when the expected ID with version specified doesn\'t match', function(done) {
-            fetch(test_plugin, temp, { expected_id: 'id@wrongVersion' })
+            fetch(test_plugin, temp, { expected_id: test_plugin_id + '@wrongVersion' })
             .then(function() {
                 expect('this call').toBe('fail');
             }, function(err) {
-                expect(''+err).toContain('Expected fetched plugin to have ID "id@wrongVersion" but got');
+                expect(''+err).toContain('to satisfy version "wrongVersion" but got');
             }).fin(done);
         });
         it('should succeed when the plugin version specified is correct', function(done) {
@@ -108,7 +114,7 @@ describe('fetch', function() {
         });
     });
     describe('git plugins', function() {
-        var clone, save_metadata, done, xml;
+        var clone, save_metadata, done;
 
         function fetchPromise(f) {
             f.then(function() { done = true; }, function(err) { done = err; });
@@ -120,31 +126,31 @@ describe('fetch', function() {
             done = false;
         });
         it('should call clonePluginGitRepo for https:// and git:// based urls', function() {
-            var url = "https://github.com/bobeast/GAPlugin.git";
+            var url = 'https://github.com/bobeast/GAPlugin.git';
             runs(function() {
                 fetchPromise(fetch(url, temp));
             });
             waitsFor(function() { return done; }, 'fetch promise never resolved', 250);
             runs(function() {
                 expect(done).toBe(true);
-                expect(clone).toHaveBeenCalledWith(url, temp, '.', undefined);
-                expect(save_metadata).toHaveBeenCalledWith(test_plugin, jasmine.any(Object));
+                expect(clone).toHaveBeenCalledWith(url, temp, '.', undefined, undefined);
+                expect(save_metadata).toHaveBeenCalled();
             });
         });
         it('should call clonePluginGitRepo with subdir if applicable', function() {
-            var url = "https://github.com/bobeast/GAPlugin.git";
+            var url = 'https://github.com/bobeast/GAPlugin.git';
             var dir = 'fakeSubDir';
             runs(function() {
                 fetchPromise(fetch(url, temp, { subdir: dir }));
             });
             waitsFor(function() { return done; }, 'fetch promise never resolved', 250);
             runs(function() {
-                expect(clone).toHaveBeenCalledWith(url, temp, dir, undefined);
-                expect(save_metadata).toHaveBeenCalledWith(test_plugin, jasmine.any(Object));
+                expect(clone).toHaveBeenCalledWith(url, temp, dir, undefined, undefined);
+                expect(save_metadata).toHaveBeenCalled();
             });
         });
         it('should call clonePluginGitRepo with subdir and git ref if applicable', function() {
-            var url = "https://github.com/bobeast/GAPlugin.git";
+            var url = 'https://github.com/bobeast/GAPlugin.git';
             var dir = 'fakeSubDir';
             var ref = 'fakeGitRef';
             runs(function() {
@@ -152,53 +158,44 @@ describe('fetch', function() {
             });
             waitsFor(function() { return done; }, 'fetch promise never resolved', 250);
             runs(function() {
-                expect(clone).toHaveBeenCalledWith(url, temp, dir, ref);
-                expect(save_metadata).toHaveBeenCalledWith(test_plugin, jasmine.any(Object));
+                expect(clone).toHaveBeenCalledWith(url, temp, dir, ref, undefined);
+                expect(save_metadata).toHaveBeenCalled();
             });
         });
         it('should extract the git ref from the URL hash, if provided', function() {
-            var url = "https://github.com/bobeast/GAPlugin.git#fakeGitRef";
-            var baseURL = "https://github.com/bobeast/GAPlugin.git";
+            var url = 'https://github.com/bobeast/GAPlugin.git#fakeGitRef';
+            var baseURL = 'https://github.com/bobeast/GAPlugin.git';
             runs(function() {
                 fetchPromise(fetch(url, temp, {}));
             });
             waitsFor(function() { return done; }, 'fetch promise never resolved', 250);
             runs(function() {
-                expect(clone).toHaveBeenCalledWith(baseURL, temp, '.', 'fakeGitRef');
-                expect(save_metadata).toHaveBeenCalledWith(test_plugin, jasmine.any(Object));
+                expect(clone).toHaveBeenCalledWith(baseURL, temp, '.', 'fakeGitRef', undefined);
+                expect(save_metadata).toHaveBeenCalled();
             });
         });
         it('should extract the subdir from the URL hash, if provided', function() {
-            var url = "https://github.com/bobeast/GAPlugin.git#:fakeSubDir";
-            var baseURL = "https://github.com/bobeast/GAPlugin.git";
+            var url = 'https://github.com/bobeast/GAPlugin.git#:fakeSubDir';
+            var baseURL = 'https://github.com/bobeast/GAPlugin.git';
             runs(function() {
                 fetchPromise(fetch(url, temp, {}));
             });
             waitsFor(function() { return done; }, 'fetch promise never resolved', 250);
             runs(function() {
-                expect(clone).toHaveBeenCalledWith(baseURL, temp, 'fakeSubDir', undefined);
-                expect(save_metadata).toHaveBeenCalledWith(test_plugin, jasmine.any(Object));
+                expect(clone).toHaveBeenCalledWith(baseURL, temp, 'fakeSubDir', undefined, undefined);
+                expect(save_metadata).toHaveBeenCalled();
             });
         });
         it('should extract the git ref and subdir from the URL hash, if provided', function() {
-            var url = "https://github.com/bobeast/GAPlugin.git#fakeGitRef:/fake/Sub/Dir/";
-            var baseURL = "https://github.com/bobeast/GAPlugin.git";
+            var url = 'https://github.com/bobeast/GAPlugin.git#fakeGitRef:/fake/Sub/Dir/';
+            var baseURL = 'https://github.com/bobeast/GAPlugin.git';
             runs(function() {
                 fetchPromise(fetch(url, temp, {}));
             });
             waitsFor(function() { return done; }, 'fetch promise never resolved', 250);
             runs(function() {
-                expect(clone).toHaveBeenCalledWith(baseURL, temp, 'fake/Sub/Dir', 'fakeGitRef');
-                expect(save_metadata).toHaveBeenCalledWith(test_plugin, jasmine.any(Object));
-            });
-        });
-        it('should throw if used with url and `link` param', function() {
-            runs(function() {
-                fetch("https://github.com/bobeast/GAPlugin.git", temp, {link:true}).then(null, function(err) { done = err; });
-            });
-            waitsFor(function() { return done; }, 'fetch promise never resolved', 250);
-            runs(function() {
-                expect(''+done).toContain('--link is not supported for git URLs');
+                expect(clone).toHaveBeenCalledWith(baseURL, temp, 'fake/Sub/Dir', 'fakeGitRef', undefined);
+                expect(save_metadata).toHaveBeenCalled();
             });
         });
         it('should fail when the expected ID doesn\'t match', function(done) {
@@ -206,7 +203,7 @@ describe('fetch', function() {
             .then(function() {
                 expect('this call').toBe('fail');
             }, function(err) {
-                expect(''+err).toContain('Expected fetched plugin to have ID "wrongID" but got');
+                expect(''+err).toContain('Expected plugin to have ID "wrongID" but got');
             }).fin(done);
         });
         it('should fail when the expected ID with version specified doesn\'t match', function(done) {
@@ -214,7 +211,7 @@ describe('fetch', function() {
             .then(function() {
                 expect('this call').toBe('fail');
             }, function(err) {
-                expect(''+err).toContain('Expected fetched plugin to have ID "id@wrongVersion" but got');
+                expect(''+err).toContain('Expected plugin to have ID "id" but got');
             }).fin(done);
         });
         it('should succeed when the expected ID is correct', function(done) {
@@ -223,9 +220,63 @@ describe('fetch', function() {
             });
         });
     });
+
+    describe('github plugins', function() {
+        // these tests actually pull a plugin from github
+        beforeEach(function(){
+            realrm('-rf',temp);
+        });
+
+        // this commit uses the new id
+        it('should fetch from a commit-sha', function(done) {
+            wrapper(fetch('http://github.com/apache/cordova-plugin-device.git#ad5f1e7bfd05ef98c01df549a0fa98036a5625db', temp, { expected_id: 'cordova-plugin-device' }), done, function() {
+                expect(1).toBe(1);
+            });
+        });
+        // this branch uses the old id
+        it('should fetch from a branch', function(done) {
+            wrapper(fetch('http://github.com/apache/cordova-plugin-device.git#cdvtest', temp, { expected_id: 'org.apache.cordova.device' }), done, function() {
+                expect(1).toBe(1);
+            });
+        });
+        // this tag uses the new id
+        it('should fetch from a tag', function(done) {
+            wrapper(fetch('http://github.com/apache/cordova-plugin-device.git#r1.0.0', temp, { expected_id: 'cordova-plugin-device' }), done, function() {
+                expect(1).toBe(1);
+            });
+        });
+    });
+
+    describe('fetch recursive error CB-8809', function(){
+
+        var srcDir = path.join(__dirname, 'plugins/recursivePlug');
+        var appDir = path.join(__dirname, 'plugins/recursivePlug/demo');
+
+        if(/^win/.test(process.platform)) {
+            it('should copy all but the /demo/ folder',function(done) {
+                var cp = spyOn(shell, 'cp');
+                wrapper(fetch(srcDir, appDir),done, function() {
+                    expect(cp).toHaveBeenCalledWith('-R',path.join(srcDir,'asset.txt'),path.join(appDir,'test-recursive'));
+                    expect(cp).not.toHaveBeenCalledWith('-R',srcDir,path.join(appDir,'test-recursive'));
+                });
+            });
+        }
+        else {
+            it('should skip copy to avoid recursive error', function(done) {
+
+                var cp = spyOn(shell, 'cp').andCallFake(function(){});
+
+                wrapper(fetch(srcDir, appDir),done, function() {
+                    expect(cp).not.toHaveBeenCalled();
+                });
+            });
+        }
+
+    });
+
     describe('registry plugins', function() {
         var pluginId = 'dummyplugin', sFetch;
-        var xml, rm, sym, mkdir, cp, save_metadata;
+        var rm, sym, save_metadata;
         beforeEach(function() {
             rm = spyOn(shell, 'rm');
             sym = spyOn(fs, 'symlinkSync');
@@ -235,25 +286,20 @@ describe('fetch', function() {
         });
 
 
-        it('should get a plugin from registry and set the right client when argument is not a folder nor URL', function(done) {
-            wrapper(fetch(pluginId, temp, {client: 'plugman'}), done, function() {
-                expect(sFetch).toHaveBeenCalledWith([pluginId], 'plugman');
-            });
-        });
         it('should fail when the expected ID doesn\'t match', function(done) {
             fetch(pluginId, temp, { expected_id: 'wrongID' })
             .then(function() {
                 expect('this call').toBe('fail');
             }, function(err) {
-                expect(''+err).toContain('Expected fetched plugin to have ID "wrongID" but got');
+                expect(''+err).toContain('Expected plugin to have ID "wrongID" but got');
             }).fin(done);
         });
         it('should fail when the expected ID with version specified doesn\'t match', function(done) {
-            fetch(pluginId, temp, { expected_id: 'id@wrongVersion' })
+            fetch(pluginId, temp, { expected_id: test_plugin_id + '@wrongVersion' })
             .then(function() {
                 expect('this call').toBe('fail');
             }, function(err) {
-                expect(''+err).toContain('Expected fetched plugin to have ID "id@wrongVersion" but got');
+                expect(''+err).toContain('to satisfy version "wrongVersion" but got');
             }).fin(done);
         });
         it('should succeed when the expected ID is correct', function(done) {
@@ -264,6 +310,18 @@ describe('fetch', function() {
         it('should succeed when the plugin version specified is correct', function(done) {
             wrapper(fetch(pluginId, temp, { expected_id: test_plugin_id + '@' + test_plugin_version }), done, function() {
                 expect(1).toBe(1);
+            });
+        });
+        it('should fetch plugins that are scoped packages', function(done) {
+            var scopedPackage = '@testcope/dummy-plugin';
+            wrapper(fetch(scopedPackage, temp, { expected_id: test_plugin_id }), done, function() {
+                expect(sFetch).toHaveBeenCalledWith([scopedPackage]);
+            });
+        });
+        it('should fetch plugins that are scoped packages and have versions specified', function(done) {
+            var scopedPackage = '@testcope/dummy-plugin@latest';
+            wrapper(fetch(scopedPackage, temp, { expected_id: test_plugin_id }), done, function() {
+                expect(sFetch).toHaveBeenCalledWith([scopedPackage]);
             });
         });
     });

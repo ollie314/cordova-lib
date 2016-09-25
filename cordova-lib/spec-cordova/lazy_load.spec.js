@@ -16,21 +16,22 @@
     specific language governing permissions and limitations
     under the License.
 */
+
+/* jshint sub:true */
+
 var lazy_load = require('../src/cordova/lazy_load'),
     config = require('../src/cordova/config'),
-    util = require('../src/cordova/util'),
     shell = require('shelljs'),
-    npmconf = require('npmconf');
+    npm = require('npm'),
     path = require('path'),
     HooksRunner = require('../src/hooks/HooksRunner'),
     request = require('request'),
     fs = require('fs'),
     Q = require('q'),
-    platforms = require('../src/cordova/platforms');
+    platforms = require('../src/platforms/platforms');
 
 describe('lazy_load module', function() {
-    var custom_path;
-    var npm_cache_add;
+    var custom_path, npm_cache_add, fakeLazyLoad;
     beforeEach(function() {
         custom_path = spyOn(config, 'has_custom_path').andReturn(false);
         npm_cache_add = spyOn(lazy_load, 'npm_cache_add').andReturn(Q(path.join('lib','dir')));
@@ -48,7 +49,7 @@ describe('lazy_load module', function() {
         beforeEach(function() {
             custom = spyOn(lazy_load, 'custom').andReturn(Q(path.join('lib','dir')));
             version = platforms.android.version;
-            platforms.android.version = "3.14.15.9265";
+            platforms.android.version = '3.14.15.9265';
         });
         afterEach(function () {
             platforms.android.version = version;
@@ -61,7 +62,6 @@ describe('lazy_load module', function() {
             }).fin(done);
         });
         it('should invoke lazy_load.custom with appropriate url, platform, and version as specified in platforms manifest', function(done) {
-            var url = platforms.android.url + ';a=snapshot;h=' + platforms.android.version + ';sf=tgz';
             lazy_load.cordova('android').then(function(dir) {
                 expect(npm_cache_add).toHaveBeenCalled();
                 expect(dir).toBeDefined();
@@ -71,7 +71,7 @@ describe('lazy_load module', function() {
     });
 
     describe('custom method (loads custom cordova libs)', function() {
-        var exists, fire, rm;
+        var exists, fire, rm, mv, readdir;
         beforeEach(function() {
             spyOn(shell, 'mkdir');
             rm = spyOn(shell, 'rm');
@@ -91,7 +91,7 @@ describe('lazy_load module', function() {
                 }
             };
             lazy_load.custom(mock_platforms, 'platform X').then(function() {
-                expect(fire).not.toHaveBeenCalled()
+                expect(fire).not.toHaveBeenCalled();
             }, function(err) {
                 expect(err).not.toBeDefined();
             }).fin(done);
@@ -106,16 +106,14 @@ describe('lazy_load module', function() {
                 }
             };
             lazy_load.custom(mock_platforms, 'platform X').then(function() {
-                expect(fire).not.toHaveBeenCalled()
+                expect(fire).not.toHaveBeenCalled();
             }, function(err) {
                 expect(err).not.toBeDefined();
             }).fin(done);
         });
 
         describe('remote URLs for libraries', function() {
-            var npmConfProxy;
             var req,
-                load_spy,
                 events = {},
                 fakeRequest = {
                     on: jasmine.createSpy().andCallFake(function(event, cb) {
@@ -125,7 +123,6 @@ describe('lazy_load module', function() {
                     pipe: jasmine.createSpy().andCallFake(function() { return fakeRequest; })
                 };
             beforeEach(function() {
-                npmConfProxy = null;
                 events = {};
                 fakeRequest.on.reset();
                 fakeRequest.pipe.reset();
@@ -136,7 +133,8 @@ describe('lazy_load module', function() {
                     }, 10);
                     return fakeRequest;
                 });
-                load_spy = spyOn(npmconf, 'load').andCallFake(function(cb) { cb(null, { get: function() { return npmConfProxy }}); });
+                spyOn(npm, 'load').andCallFake(function(cb) { cb(); });
+                spyOn(npm.config, 'get').andReturn(null);
             });
 
             it('should call request with appropriate url params', function(done) {
@@ -158,7 +156,7 @@ describe('lazy_load module', function() {
             });
             it('should take into account https-proxy npm configuration var if exists for https:// calls', function(done) {
                 var proxy = 'https://somelocalproxy.com';
-                npmConfProxy = proxy;
+                npm.config.get.andReturn(proxy);
                 var url = 'https://github.com/apache/someplugin';
                 var with_android_platform = {
                     'android': {
@@ -178,7 +176,7 @@ describe('lazy_load module', function() {
             });
             it('should take into account proxy npm config var if exists for http:// calls', function(done) {
                 var proxy = 'http://somelocalproxy.com';
-                npmConfProxy = proxy;
+                npm.config.get.andReturn(proxy);
                 var url = 'http://github.com/apache/someplugin';
                 var with_android_platform = {
                     'android': {
@@ -231,13 +229,13 @@ describe('lazy_load module', function() {
     });
 
     describe('based_on_config method', function() {
-        var cordova, custom;
+        var cordova, custom, read;
         beforeEach(function() {
             cordova = spyOn(lazy_load, 'cordova').andReturn(Q());
             custom = spyOn(lazy_load, 'custom').andReturn(Q());
         });
         it('should invoke custom if a custom lib is specified', function(done) {
-            var read = spyOn(config, 'read').andReturn({
+            read = spyOn(config, 'read').andReturn({
                 lib:{
                     maybe:{
                         url:'you or eye?',

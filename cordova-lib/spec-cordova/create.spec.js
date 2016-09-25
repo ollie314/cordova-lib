@@ -19,58 +19,53 @@
 
 var helpers = require('./helpers'),
     path = require('path'),
-    fs = require('fs'),
     shell = require('shelljs'),
     Q = require('q'),
-    config = require('../src/cordova/config'),
-    events = require('../src/events'),
-    util = require('../src/cordova/util'),
-    ConfigParser = require('../src/configparser/ConfigParser'),
+    events = require('cordova-common').events,
+    ConfigParser = require('cordova-common').ConfigParser,
     cordova = require('../src/cordova/cordova');
-
-// A utility function to generate all combinations of elements from 2 arrays.
-// crossConcat(['x', 'y'], ['1', '2', '3'])
-// -> [ 'x1', 'x2', 'x3', 'y1', 'y2', 'y3']
-var crossConcat = function(a, b, delimiter){
-    var result = [];
-    delimiter = delimiter || '';
-    for (var i = 0; i < a.length; i++) {
-        for (var j = 0; j < b.length; j++) {
-            result.push(a[i] + delimiter + b[j]);
-        }
-    }
-    return result;
-};
 
 var tmpDir = helpers.tmpDir('create_test');
 var appName = 'TestBase';
 var appId = 'org.testing';
 var project = path.join(tmpDir, appName);
-var cordovaDir = path.join(project, '.cordova');
-var configNormal = {
-      lib: {
+
+var configBasic = {
+    lib: {
         www: {
-          url: path.join(__dirname, 'fixtures', 'base', 'www'),
-          version: "testCordovaCreate",
-          id: appName
+            template: false
         }
-      }
-    };
-var configSymlink = {
-      lib: {
-        www: {
-          url: path.join(__dirname, 'fixtures', 'base'), // "create" should copy or link the www child of this dir and not the dir itself.
-          link: true
-        }
-      }
-    };
+    }
+};
+
+describe('cordova create checks for valid-identifier', function(done) {
+    it('should reject reserved words from start of id', function(done) {
+        cordova.raw.create('projectPath', 'int.bob', 'appName', {}, events)
+        .fail(function(err) {
+            expect(err.message).toBe('App id contains a reserved word, or is not a valid identifier.');
+        })
+        .fin(done);
+    });
+    
+    it('should reject reserved words from end of id', function(done) {
+        cordova.raw.create('projectPath', 'bob.class', 'appName', {}, events)
+        .fail(function(err) {
+            expect(err.message).toBe('App id contains a reserved word, or is not a valid identifier.');
+        })
+        .fin(done);
+    });
+});
 
 
-describe('create end-to-end', function() {
+describe('create basic test (see more in cordova-create)', function() {
+    //this.timeout(240000);
 
     beforeEach(function() {
         shell.rm('-rf', project);
+        shell.mkdir('-p', tmpDir);
     });
+
+
     afterEach(function() {
         process.chdir(path.join(__dirname, '..'));  // Needed to rm the dir on Windows.
         shell.rm('-rf', tmpDir);
@@ -85,11 +80,11 @@ describe('create end-to-end', function() {
 
         expect(path.join(project, 'hooks', 'README.md')).toExist();
 
-        // Check if config files exist.
+        // Check if www files exist.
         expect(path.join(project, 'www', 'index.html')).toExist();
 
-        // Check that www/config.xml was updated.
-        var configXml = new ConfigParser(path.join(project, 'www', 'config.xml'));
+        // Check that config.xml was updated.
+        var configXml = new ConfigParser(path.join(project, 'config.xml'));
         expect(configXml.packageName()).toEqual(appId);
 
         // TODO (kamrik): check somehow that we got the right config.xml from the fixture and not some place else.
@@ -99,37 +94,19 @@ describe('create end-to-end', function() {
     var results;
     events.on('results', function(res) { results = res; });
 
-    it('should successfully run with regular config', function(done) {
+    it('should successfully run', function(done) {
         // Call cordova create with no args, should return help.
         Q()
-        .then(function() {
-            // Create a real project
-            return cordova.raw.create(project, appId, appName, configNormal);
-        })
-        .then(checkProject)
-        .fail(function(err) {
-            console.log(err);
-            expect(err).toBeUndefined();
-        })
-        .fin(done);
-    });
-
-    it('should successfully run with symlinked www', function(done) {
-        // Call cordova create with no args, should return help.
-        cordova.raw.create(project, appId, appName, configSymlink)
-        .then(checkProject)
-        .then(function() {
-            // Check that www is really a symlink
-            expect(fs.lstatSync(path.join(project, 'www')).isSymbolicLink()).toBe(true);
-        })
-        .fail(function(err) {
-            if(process.platform.slice(0, 3) == 'win') {
-                // Allow symlink error if not in admin mode
-                expect(err.message).toBe("Symlinks on Windows require Administrator privileges");
-            } else {
+            .then(function() {
+                // Create a real project
+                return cordova.raw.create(project, appId, appName, configBasic, events);
+            })
+            .then(checkProject)
+            .fail(function(err) {
+                console.log(err && err.stack);
                 expect(err).toBeUndefined();
-            }
-        })
-        .fin(done);
-    });
+            })
+            .fin(done);
+    }, 60000);
+
 });

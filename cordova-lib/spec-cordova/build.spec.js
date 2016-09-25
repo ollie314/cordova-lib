@@ -17,10 +17,7 @@
     under the License.
 */
 var cordova = require('../src/cordova/cordova'),
-    platforms = require('../src/cordova/platforms'),
-    shell = require('shelljs'),
-    path = require('path'),
-    fs = require('fs'),
+    platforms = require('../src/platforms/platforms'),
     HooksRunner = require('../src/hooks/HooksRunner'),
     Q = require('q'),
     util = require('../src/cordova/util');
@@ -31,19 +28,6 @@ describe('build command', function() {
     var is_cordova, cd_project_root, list_platforms, fire;
     var project_dir = '/some/path';
     var prepare_spy, compile_spy;
-    var result;
-
-    function buildPromise(f) {
-        f.then(function() { result = true; }, function(err) { result = err; });
-    }
-
-    function wrapper(f, post) {
-        runs(function() {
-            buildPromise(f);
-        });
-        waitsFor(function() { return result; }, 'promise never resolved', 500);
-        runs(post);
-    }
 
     beforeEach(function() {
         is_cordova = spyOn(util, 'isCordova').andReturn(project_dir);
@@ -56,24 +40,26 @@ describe('build command', function() {
     describe('failure', function() {
         it('should not run inside a project with no platforms', function(done) {
             list_platforms.andReturn([]);
-            Q().then(cordova.raw.build).then(function() {
+            cordova.raw.build()
+            .then(function() {
                 expect('this call').toBe('fail');
             }, function(err) {
                 expect(err.message).toEqual(
                     'No platforms added to this project. Please use `cordova platform add <platform>`.'
-                )
+                );
             }).fin(done);
         });
 
         it('should not run outside of a Cordova-based project', function(done) {
             is_cordova.andReturn(false);
 
-            Q().then(cordova.raw.build).then(function() {
+            cordova.raw.build()
+            .then(function() {
                 expect('this call').toBe('fail');
             }, function(err) {
                 expect(err.message).toEqual(
                     'Current working directory is not a Cordova-based project.'
-                )
+                );
             }).fin(done);
         });
     });
@@ -88,10 +74,25 @@ describe('build command', function() {
             });
         });
         it('should pass down options', function(done) {
-            cordova.raw.build({platforms: ['android'], options: ['--release']}).then(function() {
-                var opts = {platforms: ['android'], options: ["--release"], verbose: false};
+            cordova.raw.build({platforms: ['android'], options: {release: true}}).then(function() {
+                var opts = {platforms: ['android'], options: {release: true}, verbose: false};
                 expect(prepare_spy).toHaveBeenCalledWith(opts);
                 expect(compile_spy).toHaveBeenCalledWith(opts);
+                done();
+            });
+        });
+
+        it('should convert options from old format and warn user about this', function (done) {
+            function warnSpy(message) {
+                expect(message).toMatch('The format of cordova.raw.* methods "options" argument was changed');
+            }
+
+            cordova.on('warn', warnSpy);
+            cordova.raw.build({platforms:['android'], options:['--release', '--cdvBuildOpt=opt']}).then(function () {
+                var opts = {platforms: ['android'], options: jasmine.objectContaining({release: true, argv: ['--cdvBuildOpt=opt']}), verbose: false};
+                expect(prepare_spy).toHaveBeenCalledWith(opts);
+                expect(compile_spy).toHaveBeenCalledWith(opts);
+                cordova.off('warn', warnSpy);
                 done();
             });
         });
@@ -121,7 +122,7 @@ describe('build command', function() {
                 }, function(err) {
                     expect(err.message).toEqual(
                         'No platforms added to this project. Please use `cordova platform add <platform>`.'
-                    )
+                    );
                 }).fin(done);
             });
         });

@@ -17,10 +17,6 @@
     under the License.
 */
 
-/* jshint node:true, bitwise:true, undef:true, trailing:true, quotmark:true,
-          indent:4, unused:vars, latedef:nofunc
-*/
-
 // The URL:true below prevents jshint error "Redefinition or 'URL'."
 /* globals URL:true */
 
@@ -28,18 +24,20 @@ var path          = require('path'),
     _             = require('underscore'),
     fs            = require('fs'),
     shell         = require('shelljs'),
-    platforms     = require('./platforms'),
-    npmconf       = require('npmconf'),
-    events        = require('../events'),
+    platforms     = require('../platforms/platforms'),
+    events        = require('cordova-common').events,
     request       = require('request'),
     config        = require('./config'),
-    HooksRunner        = require('../hooks/HooksRunner'),
+    HooksRunner   = require('../hooks/HooksRunner'),
     zlib          = require('zlib'),
     tar           = require('tar'),
     URL           = require('url'),
     Q             = require('q'),
     npm           = require('npm'),
+    npmhelper     = require('../util/npm-helper'),
+    unpack        = require('../util/unpack'),
     util          = require('./util'),
+    gitclone      = require('../gitclone'),
     stubplatform  = {
         url    : undefined,
         version: undefined,
@@ -49,6 +47,7 @@ var path          = require('path'),
 
 exports.cordova = cordova;
 exports.cordova_git = cordova_git;
+exports.git_clone = git_clone_platform;
 exports.cordova_npm = cordova_npm;
 exports.npm_cache_add = npm_cache_add;
 exports.custom = custom;
@@ -76,9 +75,6 @@ function Platform(platformString) {
 // Returns a promise for the path to the lazy-loaded directory.
 function based_on_config(project_root, platform, opts) {
     var custom_path = config.has_custom_path(project_root, platform);
-    if (custom_path === false && platform === 'windows') {
-        custom_path = config.has_custom_path(project_root, 'windows8');
-    }
     if (custom_path) {
         var dot_file = config.read(project_root),
             mixed_platforms = _.extend({}, platforms);
@@ -92,7 +88,7 @@ function based_on_config(project_root, platform, opts) {
 // Returns a promise for the path to the lazy-loaded directory.
 function cordova(platform, opts) {
     platform = new Platform(platform);
-    var use_git = opts && opts.usegit || platform.source === 'git';
+    var use_git = platform.source === 'git';
     if ( use_git ) {
         return module.exports.cordova_git(platform);
     } else {
@@ -107,12 +103,16 @@ function cordova_git(platform) {
         return Q.reject(new Error('Cordova library "' + platform.name + '" not recognized.'));
     }
     plat = mixed_platforms[platform.name];
-    if (/^...*:/.test(plat.url)) {
-        plat.url = plat.url + ';a=snapshot;h=' + platform.version + ';sf=tgz';
-    }
     plat.id = 'cordova';
-    plat.version = platform.version;
-    return module.exports.custom(mixed_platforms, platform.name);
+
+    // We can't use a version range when getting from git, so if we have a range, find the latest release on npm that matches.
+    return util.getLatestMatchingNpmVersion(platform.packageName, platform.version).then(function (version) {
+        plat.version = version;
+        if (/^...*:/.test(plat.url)) {
+            plat.url = plat.url + ';a=snapshot;h=' + version + ';sf=tgz';
+        }
+        return module.exports.custom(mixed_platforms, platform.name);
+    });
 }
 
 function cordova_npm(platform) {
@@ -122,18 +122,24 @@ function cordova_npm(platform) {
     // Check if this version was already downloaded from git, if yes, use that copy.
     // TODO: remove this once we fully switch to npm workflow.
     var platdir = platforms[platform.name].altplatform || platform.name;
-    var git_dload_dir = path.join(util.libDirectory, platdir, 'cordova', platform.version);
-    if (fs.existsSync(git_dload_dir)) {
-        var subdir = platforms[platform.name].subdirectory;
-        if (subdir) {
-            git_dload_dir = path.join(git_dload_dir, subdir);
+    // If platform.version specifies a *range*, we need to determine what version we'll actually get from npm (the
+    // latest version that matches the range) to know what local directory to look for.
+    return util.getLatestMatchingNpmVersion(platform.packageName, platform.version).then(function (version) {
+        var git_dload_dir = path.join(util.libDirectory, platdir, 'cordova', version);
+        if (fs.existsSync(git_dload_dir)) {
+            var subdir = platforms[platform.name].subdirectory;
+            if (subdir) {
+                git_dload_dir = path.join(git_dload_dir, subdir);
+            }
+            events.emit('verbose', 'Platform files for "' + platform.name + '" previously downloaded not from npm. Using that copy.');
+            return Q(git_dload_dir);
         }
-        events.emit('verbose', 'Platform files for "' + platform.name + '" previously downloaded not from npm. Using that copy.');
-        return Q(git_dload_dir);
-    }
 
-    var pkg = platform.packageName + '@' + platform.version;
-    return exports.npm_cache_add(pkg);
+        // Note that because the version of npm we use internally doesn't support caret versions, in order to allow them
+        // from the command line and in config.xml, we use the actual version returned by getLatestMatchingNpmVersion().
+        var pkg = platform.packageName + '@' + version;
+        return exports.npm_cache_add(pkg);
+    });
 }
 
 // Equivalent to a command like
@@ -141,26 +147,18 @@ function cordova_npm(platform) {
 // Returns a promise that resolves to directory containing the package.
 function npm_cache_add(pkg) {
     var npm_cache_dir = path.join(util.libDirectory, 'npm_cache');
-    // 'cache-min' is the time in seconds npm considers the files fresh and
-    // does not ask the registry if it got a fresher version.
     var platformNpmConfig = {
-        'cache-min': 3600*24,
-        cache: npm_cache_dir,
-        registry: 'https://registry.npmjs.org'
+        cache: npm_cache_dir
     };
 
-    return Q.nfcall(npm.load)
-    .then(function () {
-        // configure npm here instead of passing parameters to npm.load due to CB-7670
-        for (var prop in platformNpmConfig) {
-            npm.config.set(prop, platformNpmConfig[prop]);
-        }
-    })
-    .then(function() {
-        return Q.ninvoke(npm.commands, 'cache', ['add', pkg]);
-    }).then(function(info) {
-        var pkgDir = path.resolve(npm.cache, info.name, info.version, 'package');
-        return pkgDir;
+    return npmhelper.loadWithSettingsThenRestore(platformNpmConfig, function () {
+        return Q.ninvoke(npm.commands, 'cache', ['add', pkg])
+        .then(function (info) {
+            var pkgDir = path.resolve(npm.cache, info.name, info.version, 'package');
+            // Unpack the package that was added to the cache (CB-8154)
+            var package_tgz = path.resolve(npm.cache, info.name, info.version, 'package.tgz');
+            return unpack.unpackTgz(package_tgz, pkgDir);
+        });
     });
 }
 
@@ -214,15 +212,15 @@ function custom(platforms, platform) {
     }).then(function() {
         var uri = URL.parse(url);
         var d = Q.defer();
-        npmconf.load(function(err, conf) {
+        npm.load(function(err) {
             // Check if NPM proxy settings are set. If so, include them in the request() call.
             var proxy;
             if (uri.protocol == 'https:') {
-                proxy = conf.get('https-proxy');
+                proxy = npm.config.get('https-proxy');
             } else if (uri.protocol == 'http:') {
-                proxy = conf.get('proxy');
+                proxy = npm.config.get('proxy');
             }
-            var strictSSL = conf.get('strict-ssl');
+            var strictSSL = npm.config.get('strict-ssl');
 
             // Create a tmp dir. Using /tmp is a problem because it's often on a different partition and sehll.mv()
             // fails in this case with "EXDEV, cross-device link not permitted".
@@ -253,6 +251,14 @@ function custom(platforms, platform) {
                 }
             });
             req.pipe(zlib.createUnzip())
+            .on('error', function(err) {
+                // Sometimes if the URL is bad (most likely unavailable version), and git-wip-us.apache.org is
+                // particularly slow at responding, we hit an error because of bad data piped to zlib.createUnzip()
+                // before we hit the request.get() callback above (with a 404 error). Handle that gracefully. It is
+                // likely that we will end up calling d.reject() for an HTTP error in the request() callback above, but
+                // in case not, reject with a useful error here.
+                d.reject(new Error('Unable to fetch platform ' + platform + '@' + version + ': Error: version not found.'));
+            })
             .pipe(tar.Extract({path:tmp_dir}))
             .on('error', function(err) {
                 shell.rm('-rf', tmp_dir);
@@ -278,6 +284,33 @@ function custom(platforms, platform) {
             });
         });
         return d.promise.then(function () { return lib_dir; });
+    });
+}
+
+// Returns a promise
+function git_clone_platform(git_url, branch) {
+    // Create a tmp dir. Using /tmp is a problem because it's often on a different partition and sehll.mv()
+    // fails in this case with "EXDEV, cross-device link not permitted".
+    var tmp_subidr = 'tmp_cordova_git_' + process.pid + '_' + (new Date()).valueOf();
+    var tmp_dir = path.join(util.libDirectory, 'tmp', tmp_subidr);
+    shell.rm('-rf', tmp_dir);
+    shell.mkdir('-p', tmp_dir);
+
+    return HooksRunner.fire('before_platform_clone', {
+        repository: git_url,
+        location: tmp_dir
+    }).then(function () {
+        var branchToCheckout = branch || 'master';
+        return gitclone.clone(git_url, branchToCheckout, tmp_dir);
+    }).then(function () {
+        HooksRunner.fire('after_platform_clone', {
+            repository: git_url,
+            location: tmp_dir
+        });
+        return tmp_dir;
+    }).fail(function (err) {
+        shell.rm('-rf', tmp_dir);
+        return Q.reject(err);
     });
 }
 

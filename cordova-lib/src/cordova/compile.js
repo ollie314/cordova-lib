@@ -17,30 +17,29 @@
     under the License.
 */
 
-/* jshint node:true, bitwise:true, undef:true, trailing:true, quotmark:true,
-          indent:4, unused:vars, latedef:nofunc
-*/
-
-var path              = require('path'),
-    cordova_util      = require('./util'),
-    HooksRunner            = require('../hooks/HooksRunner'),
-    superspawn        = require('./superspawn');
+var Q            = require('q'),
+    cordova_util = require('./util'),
+    HooksRunner  = require('../hooks/HooksRunner'),
+    promiseUtil  = require('../util/promise-util'),
+    platform_lib = require('../platforms/platforms'),
+    _ = require('underscore');
 
 // Returns a promise.
 module.exports = function compile(options) {
-    var projectRoot = cordova_util.cdProjectRoot();
-    options = cordova_util.preProcessOptions(options);
+    return Q().then(function() {
+        var projectRoot = cordova_util.cdProjectRoot();
+        options = cordova_util.preProcessOptions(options);
 
-    var hooksRunner = new HooksRunner(projectRoot);
-    var ret = hooksRunner.fire('before_compile', options);
-    options.platforms.forEach(function(platform) {
-        ret = ret.then(function() {
-            var cmd = path.join(projectRoot, 'platforms', platform, 'cordova', 'build');
-            return superspawn.spawn(cmd, options.options, { stdio: 'inherit', printCommand: true });
+        var hooksRunner = new HooksRunner(projectRoot);
+        return hooksRunner.fire('before_compile', options)
+        .then(function () {
+            return promiseUtil.Q_chainmap(options.platforms, function (platform) {
+                return platform_lib
+                    .getPlatformApi(platform)
+                    .build(_.clone(options.options));
+            });
+        }).then(function() {
+            return hooksRunner.fire('after_compile', options);
         });
     });
-    ret = ret.then(function() {
-        return hooksRunner.fire('after_compile', options);
-    });
-    return ret;
 };

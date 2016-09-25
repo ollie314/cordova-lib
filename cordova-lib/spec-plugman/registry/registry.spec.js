@@ -20,7 +20,6 @@ var registry = require('../../src/plugman/registry/registry'),
     manifest = require('../../src/plugman/registry/manifest'),
     fs = require('fs'),
     path = require('path'),
-    Q = require('q'),
     shell   = require('shelljs'),
     os = require('os'),
     npm = require('npm');
@@ -42,13 +41,13 @@ describe('registry', function() {
     }
 
     describe('manifest', function() {
-        var pluginDir, packageJson, tmp_plugin, tmp_plugin_xml, tmp_package_json;
+        var pluginDir, tmp_plugin, tmp_plugin_xml, tmp_package_json;
         beforeEach(function() {
-            pluginDir = __dirname + '/../plugins/EnginePlugin';
+            pluginDir = __dirname + '/../plugins/com.cordova.engine';
             tmp_plugin = path.join(os.tmpdir(), 'plugin');
             tmp_plugin_xml = path.join(tmp_plugin, 'plugin.xml');
             tmp_package_json = path.join(tmp_plugin, 'package.json');
-            shell.cp('-R', pluginDir+"/*", tmp_plugin);
+            shell.cp('-R', pluginDir+'/*', tmp_plugin);
         });
         afterEach(function() {
             shell.rm('-rf', tmp_plugin);
@@ -100,7 +99,7 @@ describe('registry', function() {
             };
 
             registry.settings = fakeSettings;
-            fakeLoad = spyOn(npm, 'load').andCallFake(function(settings, cb) { cb(null, true); });
+            fakeLoad = spyOn(npm, 'load').andCallFake(function () { arguments[arguments.length - 1](null, true); });
 
             fakeNPMCommands = {};
             ['config', 'adduser', 'cache', 'publish', 'unpublish', 'search'].forEach(function(cmd) {
@@ -109,43 +108,20 @@ describe('registry', function() {
 
             npm.commands = fakeNPMCommands;
             npm.config.set = function(){};
+            npm.config.get = function(){};
+            npm.config.del = function(){};
         });
         it('should run config', function() {
             var params = ['set', 'registry', 'http://registry.cordova.io'];
             registryPromise(true, registry.config(params).then(function() {
-                expect(fakeLoad).toHaveBeenCalledWith(registry.settings, jasmine.any(Function));
+                expect(fakeLoad).toHaveBeenCalledWith(jasmine.any(Object),jasmine.any(Function));
                 expect(fakeNPMCommands.config).toHaveBeenCalledWith(params, jasmine.any(Function));
-            }));
-        });
-        it('should run adduser', function() {
-            registryPromise(true, registry.adduser(null).then(function() {
-                expect(fakeLoad).toHaveBeenCalledWith(registry.settings, jasmine.any(Function));
-                expect(fakeNPMCommands.adduser).toHaveBeenCalledWith(null, jasmine.any(Function));
-            }));
-        });
-        it('should run publish', function() {
-            var params = [__dirname + '/../plugins/DummyPlugin'];
-            var spyGenerate = spyOn(manifest, 'generatePackageJsonFromPluginXml').andReturn(Q());
-            var spyUnlink = spyOn(fs, 'unlink');
-            registryPromise(true, registry.publish(params).then(function() {
-                expect(fakeLoad).toHaveBeenCalledWith(registry.settings, jasmine.any(Function));
-                expect(spyGenerate).toHaveBeenCalledWith(params[0]);
-                expect(fakeNPMCommands.publish).toHaveBeenCalledWith(params, jasmine.any(Function));
-                expect(spyUnlink).toHaveBeenCalledWith(path.resolve(params[0], 'package.json'));
-            }));
-        });
-        it('should run unpublish', function() {
-            var params = ['dummyplugin@0.6.0'];
-            registryPromise(true, registry.unpublish(params).then(function() {
-                expect(fakeLoad).toHaveBeenCalledWith(registry.settings, jasmine.any(Function));
-                expect(fakeNPMCommands.unpublish).toHaveBeenCalledWith(params, jasmine.any(Function));
-                expect(fakeNPMCommands.cache).toHaveBeenCalledWith(['clean'], jasmine.any(Function));
             }));
         });
         it('should run search', function() {
             var params = ['dummyplugin', 'plugin'];
             registryPromise(true, registry.search(params).then(function() {
-                expect(fakeLoad).toHaveBeenCalledWith(registry.settings, jasmine.any(Function));
+                expect(fakeLoad).toHaveBeenCalledWith(jasmine.any(Object),jasmine.any(Function));
                 expect(fakeNPMCommands.search).toHaveBeenCalledWith(params, true, jasmine.any(Function));
             }));
         });

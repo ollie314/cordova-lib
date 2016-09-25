@@ -17,17 +17,16 @@
     under the License.
 */
 
-var platforms = require('../../src/cordova/platforms'),
+var blackberryParser = require('../../src/cordova/metadata/blackberry10_parser'),
     util = require('../../src/cordova/util'),
     path = require('path'),
     shell = require('shelljs'),
     fs = require('fs'),
     et = require('elementtree'),
-    xmlHelpers = require('../../src/util/xml-helpers'),
-    Q = require('q'),
+    xmlHelpers = require('cordova-common').xmlHelpers,
     config = require('../../src/cordova/config'),
-    ConfigParser = require('../../src/configparser/ConfigParser'),
-    cordova = require('../../src/cordova/cordova');
+    Parser = require('../../src/cordova/metadata/parser'),
+    ConfigParser = require('cordova-common').ConfigParser;
 
 var cfg = new ConfigParser(path.join(__dirname, '..', 'test-config.xml'));
 
@@ -77,15 +76,23 @@ describe('blackberry10 project parser', function() {
         it('should throw an exception with a path that is not a native blackberry project', function() {
             exists.andReturn(false);
             expect(function() {
-                new platforms.blackberry10.parser(proj);
+                new blackberryParser(proj);
             }).toThrow();
         });
         it('should accept a proper native blackberry project path as construction parameter', function() {
             var project;
             expect(function() {
-                project = new platforms.blackberry10.parser(proj);
+                project = new blackberryParser(proj);
             }).not.toThrow();
             expect(project).toBeDefined();
+        });
+        it('should be an instance of Parser', function() {
+            expect(new blackberryParser(proj) instanceof Parser).toBe(true);
+        });
+        it('should call super with the correct arguments', function() {
+            var call = spyOn(Parser, 'call');
+            var p = new blackberryParser(proj);
+            expect(call).toHaveBeenCalledWith(p, 'blackberry10', proj);
         });
     });
 
@@ -93,7 +100,7 @@ describe('blackberry10 project parser', function() {
         var p, cp, rm, mkdir, is_cordova, write, read;
         var bb_proj = path.join(proj, 'platforms', 'blackberry10');
         beforeEach(function() {
-            p = new platforms.blackberry10.parser(bb_proj);
+            p = new blackberryParser(bb_proj);
             cp = spyOn(shell, 'cp');
             rm = spyOn(shell, 'rm');
             mkdir = spyOn(shell, 'mkdir');
@@ -103,7 +110,9 @@ describe('blackberry10 project parser', function() {
         });
 
         describe('update_from_config method', function() {
-            var xml_name, xml_pkg, xml_version, xml_access_rm, xml_update, xml_append, xml_content;
+            var xml_name, xml_pkg, xml_version, xml_access_rm, xml_update,
+                xml_append, xml_content, xml_access_add, xml_preference_remove,
+                xml_preference_add;
             beforeEach(function() {
                 xml_content = jasmine.createSpy('xml content');
                 xml_name = jasmine.createSpy('xml name');
@@ -166,7 +175,7 @@ describe('blackberry10 project parser', function() {
             });
         });
         describe('update_project method', function() {
-            var config, www, overrides, svn, parse, get_env, write_env;
+            var config, www, overrides, svn, parse;
             beforeEach(function() {
                 config = spyOn(p, 'update_from_config');
                 www = spyOn(p, 'update_www');

@@ -17,24 +17,13 @@
     under the License.
 */
 
-/* jshint node:true, bitwise:true, undef:true, trailing:true, quotmark:true,
-          indent:4, unused:vars, latedef:nofunc,
-          laxcomma:true
-*/
+/* jshint laxcomma:true */
 
 var npm = require('npm'),
     path = require('path'),
-    url = require('url'),
-    fs = require('fs'),
-    manifest = require('./manifest'),
-    rc = require('rc'),
     Q = require('q'),
-    request = require('request'),
-    home = process.env.HOME || process.env.HOMEPATH || process.env.USERPROFILE,
-    events = require('../../events'),
-    plugmanConfigDir = path.resolve(home, '.plugman'),
-    plugmanCacheDir = path.resolve(plugmanConfigDir, 'cache');
-
+    npmhelper = require('../../util/npm-helper'),
+    events = require('cordova-common').events;
 
 module.exports = {
     settings: null,
@@ -43,11 +32,8 @@ module.exports = {
      * @param {Array} args Command argument
      * @return {Promise.<Object>} Promised configuration object.
      */
-    config: function(args) {
-        return initSettings().then(function(settings) {
-            return Q.ninvoke(npm, 'load', settings);
-        })
-        .then(function() {
+    config: function (args) {
+        return initThenLoadSettingsWithRestore(function () {
             return Q.ninvoke(npm.commands, 'config', args);
         });
     },
@@ -58,48 +44,13 @@ module.exports = {
      * @return {Promise.<void>} Promise for completion.
      */
     owner: function(args) {
-        return initSettings().then(function(settings) {
-            return Q.ninvoke(npm, 'load', settings);
-        }).then(function() {
-            return Q.ninvoke(npm.commands, 'owner', args);
-        });
-    },
-    /**
-     * @method adduser
-     * @param {Array} args Command argument
-     * @return {Promise.<void>} Promise for completion.
-     */
-    adduser: function(args) {
-        return initSettings().then(function(settings) {
-            return Q.ninvoke(npm, 'load', settings);
-        })
-        .then(function() {
-            return Q.ninvoke(npm.commands, 'adduser', args);
-        });
-    },
+        var command = args && args[0];
+        if (command && (command === 'add' || command === 'rm'))
+            return Q.reject('Support for \'owner add/rm\' commands has been removed ' +
+                'due to transition of Cordova plugins registry to read-only state');
 
-    /**
-     * @method publish
-     * @param {Array} args Command argument
-     * @return {Promise.<Object>} Promised published data.
-     */
-    publish: function(args) {
-        return initSettings()
-        .then(function(settings) {
-            return manifest.generatePackageJsonFromPluginXml(args[0])
-            .then(function() {
-                return Q.ninvoke(npm, 'load', settings);
-            }).then(function() {
-                // With  no --force we'll get a 409 (conflict) when trying to
-                // overwrite an existing package@version.
-                //npm.config.set('force', true);
-                events.emit('log', 'attempting to publish plugin to registry');
-                return Q.ninvoke(npm.commands, 'publish', args);
-            }).then(function() {
-                fs.unlink(path.resolve(args[0], 'package.json'));
-            }).catch(function(err){
-                return err;
-            });
+        return initThenLoadSettingsWithRestore(function () {
+            return Q.ninvoke(npm.commands, 'owner', args);
         });
     },
 
@@ -109,36 +60,8 @@ module.exports = {
      * @return {Promise.<Object>} Promised search results.
      */
     search: function(args) {
-        return initSettings()
-        .then(function(settings) {
-            return Q.ninvoke(npm, 'load', settings);
-        }).then(function() {
+        return initThenLoadSettingsWithRestore(function () {
             return Q.ninvoke(npm.commands, 'search', args, true);
-        });
-    },
-
-    /**
-     * @method unpublish
-     * @param {Array} args Command argument
-     * @return {Promise.<Object>} Promised results.
-     */
-    unpublish: function(args) {
-        return initSettings()
-        .then(function(settings) {
-            return Q.ninvoke(npm, 'load', settings);
-        }).then(function() {
-            // --force is required to delete an entire plugin with all versions.
-            // Without --force npm can only unpublish a specific version.
-            //npm.config.set('force', true);
-            // Note, npm.unpublish does not report back errors (at least some)
-            // e.g.: `unpublish non.existent.plugin`
-            // will complete with no errors.
-            events.emit('log', 'attempting to unpublish plugin from registry');
-            return Q.ninvoke(npm.commands, 'unpublish', args);
-        }).then(function() {
-            // npm.unpublish removes the cache for the unpublished package
-            // cleaning the entire cache might not be necessary.
-            return Q.ninvoke(npm.commands, 'cache', ['clean']);
         });
     },
 
@@ -147,26 +70,14 @@ module.exports = {
      * @param {Array} with one element - the plugin id or "id@version"
      * @return {Promise.<string>} Promised path to fetched package.
      */
-    fetch: function(plugin, client) {
+    fetch: function(plugin) {
         plugin = plugin.shift();
-        return initSettings()
-        .then(function (settings) {
-            return Q.nfcall(npm.load)
-            // configure npm here instead of passing parameters to npm.load due to CB-7670
-            .then(function () {
-                for (var prop in settings){
-                    npm.config.set(prop, settings[prop]);
-                }
-            });
+        return Q.fcall(function() {
+            //fetch from npm
+            return fetchPlugin(plugin);
         })
-        .then(function() {
-            return Q.ninvoke(npm.commands, 'cache', ['add', plugin]);
-        })
-        .then(function(info) {
-            var cl = (client === 'plugman' ? 'plugman' : 'cordova-cli');
-            bumpCounter(info, cl);
-            var pluginDir = path.resolve(npm.cache, info.name, info.version, 'package');
-            return pluginDir;
+        .fail(function(error) {
+            return Q.reject(error);
         });
     },
 
@@ -177,128 +88,45 @@ module.exports = {
      */
     info: function(plugin) {
         plugin = plugin.shift();
-        return initSettings()
-        .then(Q.nbind(npm.load, npm))
-        .then(function() {
-            // Set cache timout limits to 0 to force npm to call the registry
-            // even when it has a recent .cache.json file.
-            npm.config.set('cache-min', 0);
-            npm.config.set('cache-max', 0);
-            return Q.ninvoke(npm.commands, 'view', [plugin], /* silent = */ true );
-        })
-        .then(function(info) {
-            // Plugin info should be accessed as info[version]. If a version
-            // specifier like >=x.y.z was used when calling npm view, info
-            // can contain several versions, but we take the first one here.
-            console.log(info);
-            var version = Object.keys(info)[0];
-            return info[version];
+        return npmhelper.loadWithSettingsThenRestore({
+            'cache-min': 0,
+            'cache-max': 0
+        }, function() {
+            return Q.ninvoke(npm.commands, 'view', [plugin], /* silent = */ true )
+            .then(function(info) {
+                // Plugin info should be accessed as info[version]. If a version
+                // specifier like >=x.y.z was used when calling npm view, info
+                // can contain several versions, but we take the first one here.
+                var version = Object.keys(info)[0];
+                return info[version];
+            });
         });
     }
 };
 
 /**
- * @method initSettings
- * @return {Promise.<Object>} Promised settings.
+ * @description Calls npmhelper.loadWithSettingsThenRestore, which initializes npm.config with
+ * settings, executes the promises, then restores npm.config. Use this rather than passing settings to npm.load, since
+ * that only works the first time you try to load npm.
  */
-function initSettings() {
-    var settings = module.exports.settings;
-    // check if settings already set
-    if(settings !== null) return Q(settings);
-
-    // setting up settings
-    // obviously if settings dir does not exist settings is going to be empty
-    if(!fs.existsSync(plugmanConfigDir)) {
-        fs.mkdirSync(plugmanConfigDir);
-        fs.mkdirSync(plugmanCacheDir);
-    }
-
-    settings =
-    module.exports.settings =
-    rc('plugman', {
-        cache: plugmanCacheDir,
-        registry: 'http://registry.cordova.io',
-        logstream: fs.createWriteStream(path.resolve(plugmanConfigDir, 'plugman.log')),
-        userconfig: path.resolve(plugmanConfigDir, 'config')
-    });
-    return Q(settings);
+function initThenLoadSettingsWithRestore(promises) {
+    return npmhelper.loadWithSettingsThenRestore({}, promises);
 }
 
-
-// Send a message to the registry to update download counts.
-function bumpCounter(info, client) {
-    // Update the download count for this plugin.
-    // Fingers crossed that the timestamps are unique, and that no plugin is downloaded
-    // twice in a single millisecond.
-    //
-    // This is acceptable, because the failure mode is Couch gracefully rejecting the second one
-    // (for lacking a _rev), and dropped a download count is not important.
-    var settings = module.exports.settings;
-    var now = new Date();
-    var message = {
-        day: now.getUTCFullYear() + '-' + (now.getUTCMonth()+1) + '-' + now.getUTCDate(),
-        pkg: info.name,
-        client: client,
-        version: info.version
-    };
-    var remote = settings.registry + '/downloads';
-
-    makeRequest('POST', remote, message, function (err, res, body) {
-        // ignore errors
+/**
+* @param {Array} with one element - the plugin id or "id@version"
+* @return {Promise.<string>} Promised path to fetched package.
+*/
+function fetchPlugin(plugin) {
+    return initThenLoadSettingsWithRestore(function () {
+        events.emit('log', 'Fetching plugin "' + plugin + '" via npm');
+        return Q.ninvoke(npm.commands, 'cache', ['add', plugin])
+        .then(function (info) {
+            var unpack = require('../../util/unpack');
+            var pluginDir = path.resolve(npm.cache, info.name, info.version, 'package');
+            // Unpack the plugin that was added to the cache (CB-8154)
+            var package_tgz = path.resolve(npm.cache, info.name, info.version, 'package.tgz');
+            return unpack.unpackTgz(package_tgz, pluginDir);
+        });
     });
-}
-
-
-function makeRequest (method, where, what, cb_) {
-    var settings = module.exports.settings;
-    var remote = url.parse(where);
-    if (typeof cb_ !== 'function') {
-        cb_ = what;
-        what = null;
-    }
-    var cbCalled = false;
-    function cb () {
-        if (cbCalled) return;
-        cbCalled = true;
-        cb_.apply(null, arguments);
-    }
-
-    var strict = settings['strict-ssl'];
-    if (strict === undefined) strict = true;
-    var opts = { url: remote
-               , method: method
-               , ca: settings.ca
-               , strictSSL: strict
-               };
-
-    var headers = opts.headers = {};
-
-    headers.accept = 'application/json';
-
-    headers['user-agent'] = settings['user-agent'] ||
-                            'node/' + process.version;
-
-    var p = settings.proxy;
-    var sp = settings['https-proxy'] || p;
-    opts.proxy = remote.protocol === 'https:' ? sp : p;
-
-    // figure out wth 'what' is
-    if (what) {
-        if (Buffer.isBuffer(what) || typeof what === 'string') {
-            opts.body = what;
-            headers['content-type'] = 'application/json';
-            headers['content-length'] = Buffer.byteLength(what);
-        } else {
-            opts.json = what;
-        }
-    }
-
-    var req = request(opts, cb);
-
-    req.on('error', cb);
-    req.on('socket', function (s) {
-        s.on('error', cb);
-    });
-
-    return req;
 }

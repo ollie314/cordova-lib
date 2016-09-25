@@ -15,10 +15,13 @@
  * under the License.
  *
 */
+
+/* jshint laxcomma:true */
+
 var common = require('../../src/plugman/platforms/common')
   , path = require('path')
   , fs = require('fs')
-  , osenv = require('osenv')
+  , osenv = require('os')
   , shell = require('shelljs')
   , test_dir = path.join(osenv.tmpdir(), 'test_plugman')
   , project_dir = path.join(test_dir, 'project')
@@ -35,7 +38,7 @@ describe('common platform handler', function() {
             shell.mkdir('-p', test_dir);
             var target = path.join(test_dir, 'somefile');
             fs.writeFileSync(target, '80085', 'utf-8');
-            expect(function(){common.resolveSrcPath(test_dir, 'somefile')}).not.toThrow();
+            expect(function(){common.resolveSrcPath(test_dir, 'somefile');}).not.toThrow();
             shell.rm('-rf', test_dir);
         });
     });
@@ -43,25 +46,25 @@ describe('common platform handler', function() {
     describe('resolveTargetPath', function() {
         it('should throw if path exists', function(){
             shell.mkdir('-p', test_dir);
-            expect(function(){common.resolveTargetPath(test_dir)}).toThrow();
+            expect(function(){common.resolveTargetPath(test_dir);}).toThrow();
             shell.rm('-rf', test_dir);
         });
 
         it('should not throw if path cannot be resolved', function(){
-            expect(function(){common.resolveTargetPath(test_dir, 'somefile')}).not.toThrow();
+            expect(function(){common.resolveTargetPath(test_dir, 'somefile');}).not.toThrow();
         });
     });
 
     describe('copyFile', function() {
         it('should throw if source path not found', function(){
-            expect(function(){common.copyFile(test_dir, src, project_dir, dest)}).
+            expect(function(){common.copyFile(test_dir, src, project_dir, dest);}).
                 toThrow(new Error('"' + src + '" not found!'));
         });
 
         it('should throw if src not in plugin directory', function(){
             shell.mkdir('-p', project_dir);
             fs.writeFileSync(non_plugin_file, 'contents', 'utf-8');
-            expect(function(){common.copyFile(test_dir, "../non_plugin_file", project_dir, dest)}).
+            expect(function(){common.copyFile(test_dir, '../non_plugin_file', project_dir, dest);}).
                 toThrow(new Error('"' + non_plugin_file + '" not located within plugin!'));
             shell.rm('-rf', test_dir);
         });
@@ -69,30 +72,34 @@ describe('common platform handler', function() {
         it('should allow symlink src, if inside plugin', function(){
             shell.mkdir('-p', java_dir);
             fs.writeFileSync(java_file, 'contents', 'utf-8');
-            fs.symlinkSync(java_file, symlink_file);
-            common.copyFile(test_dir, symlink_file, project_dir, dest)
+
+            // This will fail on windows if not admin - ignore the error in that case.
+            if (ignoreEPERMonWin32(java_file, symlink_file)) {
+                return;
+            }
+
+            common.copyFile(test_dir, symlink_file, project_dir, dest);
             shell.rm('-rf', project_dir);
         });
 
         it('should throw if symlink is linked to a file outside the plugin', function(){
             shell.mkdir('-p', java_dir);
             fs.writeFileSync(non_plugin_file, 'contents', 'utf-8');
-            fs.symlinkSync(non_plugin_file, symlink_file);
-            expect(function(){common.copyFile(test_dir, symlink_file, project_dir, dest)}).
+
+            // This will fail on windows if not admin - ignore the error in that case.
+            if (ignoreEPERMonWin32(non_plugin_file, symlink_file)) {
+                return;
+            }
+
+            expect(function(){common.copyFile(test_dir, symlink_file, project_dir, dest);}).
                 toThrow(new Error('"' + symlink_file + '" not located within plugin!'));
             shell.rm('-rf', project_dir);
-        });
-
-        it('should throw if target path exists', function(){
-            shell.mkdir('-p', dest);
-            expect(function(){common.copyFile(test_dir, src, project_dir, dest)}).toThrow();
-            shell.rm('-rf', dest);
         });
 
         it('should throw if dest is outside the project directory', function(){
             shell.mkdir('-p', java_dir);
             fs.writeFileSync(java_file, 'contents', 'utf-8');
-            expect(function(){common.copyFile(test_dir, java_file, project_dir, non_plugin_file)}).
+            expect(function(){common.copyFile(test_dir, java_file, project_dir, non_plugin_file);}).
                 toThrow(new Error('"' + non_plugin_file + '" not located within project!'));
             shell.rm('-rf', project_dir);
         });
@@ -124,6 +131,16 @@ describe('common platform handler', function() {
             expect(s).toHaveBeenCalledWith('-f', java_file, resolvedDest);
 
             shell.rm('-rf', project_dir);
+        });
+
+    });
+
+    describe('copyNewFile', function () {
+        it('should throw if target path exists', function(){
+            shell.mkdir('-p', dest);
+            expect(function(){common.copyNewFile(test_dir, src, project_dir, dest);}).
+                toThrow(new Error('"' + dest + '" already exists!'));
+            shell.rm('-rf', dest);
         });
 
     });
@@ -164,3 +181,15 @@ describe('common platform handler', function() {
         });
     });
 });
+
+function ignoreEPERMonWin32(symlink_src, symlink_dest) {
+    try {
+        fs.symlinkSync(symlink_src, symlink_dest);
+    } catch (e) {
+        if (process.platform === 'win32' && e.message.indexOf('Error: EPERM, operation not permitted' > -1)) {
+            return true;
+        }
+        throw e;
+    }
+    return false;
+}
